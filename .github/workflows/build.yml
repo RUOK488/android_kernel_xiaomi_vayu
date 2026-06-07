@@ -1,4 +1,4 @@
-name: Build SukiSU Kernel for POCO X3 Pro (Auto-Defconfig)
+name: Build SukiSU Kernel for POCO X3 Pro (Stable)
 
 on:
   workflow_dispatch:
@@ -23,30 +23,11 @@ jobs:
           clang-14 lld-14 llvm-14 python2 lz4
         sudo ln -sf /usr/bin/python2 /usr/bin/python
 
-    - name: Clone kernel source (tejas101k/sixteen - has defconfig)
+    - name: Clone Jebaitedneko kernel (caf branch)
       run: |
-        git clone https://github.com/tejas101k/kernel_xiaomi_vayu -b sixteen --depth=1 kernel
+        git clone https://github.com/Jebaitedneko/android_kernel_xiaomi_vayu -b caf --depth=1 kernel
         cd kernel
-
-    - name: Find any defconfig
-      id: defconfig
-      run: |
-        cd kernel
-        # List all defconfigs for debugging
-        echo "Available defconfigs:"
-        find arch/arm64/configs -name "*.config" | sort
-        # Try to find one that contains 'vayu' or 'defconfig'
-        CONFIG=$(find arch/arm64/configs -name "*vayu*.config" | head -1)
-        if [ -z "$CONFIG" ]; then
-          CONFIG=$(find arch/arm64/configs -name "defconfig" | head -1)
-        fi
-        if [ -z "$CONFIG" ]; then
-          echo "No defconfig found!"
-          exit 1
-        fi
-        CONFIG_NAME=$(basename "$CONFIG" .config)
-        echo "Using defconfig: $CONFIG_NAME"
-        echo "NAME=$CONFIG_NAME" >> $GITHUB_OUTPUT
+        test -f arch/arm64/configs/vayu_defconfig || (echo "vayu_defconfig missing" && exit 1)
 
     - name: Integrate SukiSU Ultra
       run: |
@@ -54,12 +35,24 @@ jobs:
         curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
         rm -rf KernelSU/.git
 
-    - name: Configure kernel
+    - name: Configure kernel (disable all tracing, perf, hugetlb, HID)
       run: |
         cd kernel
-        make ${{ steps.defconfig.outputs.NAME }}
+        make vayu_defconfig
+        # Disable HID (avoids hid-trace.h)
         scripts/config --disable CONFIG_HID
+        scripts/config --disable CONFIG_HID_SUPPORT
+        # Disable all tracing and ftrace
         scripts/config --disable CONFIG_TRACING
+        scripts/config --disable CONFIG_FTRACE
+        scripts/config --disable CONFIG_EVENT_TRACING
+        scripts/config --disable CONFIG_PERF_EVENTS
+        scripts/config --disable CONFIG_HUGETLB_PAGE
+        scripts/config --disable CONFIG_HUGETLBFS
+        scripts/config --disable CONFIG_DEBUG_FS
+        scripts/config --disable CONFIG_DEBUG_KERNEL
+        scripts/config --disable CONFIG_DEBUG_INFO
+        # Enable SukiSU
         scripts/config --enable CONFIG_KSU_MANUAL_HOOK
         make olddefconfig
 
@@ -71,27 +64,37 @@ jobs:
           LD=ld.lld-14 \
           AR=llvm-ar-14 \
           NM=llvm-nm-14 \
-          OBJCOPY=llvm-objcopy-14 \
-          Image.gz-dtb
+          OBJCOPY=llvm-objcopy-14
 
-    - name: Copy kernel image
+    - name: Find and copy kernel image
       run: |
         cd kernel
+        # List boot directory for debugging
+        echo "Contents of arch/arm64/boot:"
+        ls -la arch/arm64/boot/
+        # Try to find any kernel image
         if [ -f arch/arm64/boot/Image.gz-dtb ]; then
           cp arch/arm64/boot/Image.gz-dtb ../Image.gz-dtb
+        elif [ -f arch/arm64/boot/Image.gz ]; then
+          cp arch/arm64/boot/Image.gz ../Image.gz-dtb
+        elif [ -f arch/arm64/boot/Image ]; then
+          cp arch/arm64/boot/Image ../Image.gz-dtb
+        elif [ -f arch/arm64/boot/zImage ]; then
+          cp arch/arm64/boot/zImage ../Image.gz-dtb
         else
-          find arch/arm64/boot -type f -name "Image*" -exec cp {} ../Image.gz-dtb \;
+          echo "No kernel image found. Searching recursively..."
+          find . -name "Image*" -o -name "zImage"
+          exit 1
         fi
-        test -f ../Image.gz-dtb
 
-    - name: Package
+    - name: Package with AnyKernel3
       run: |
         git clone https://github.com/osm0sis/AnyKernel3 -b master AnyKernel3
         cp Image.gz-dtb AnyKernel3/
         cd AnyKernel3
         zip -r9 "SukiSU_vayu_$(date +%Y%m%d_%H%M%S).zip" . -x ".git*"
 
-    - name: Upload
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: SukiSU_Kernel_vayu
