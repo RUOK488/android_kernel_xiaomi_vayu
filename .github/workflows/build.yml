@@ -1,4 +1,4 @@
-name: Build SukiSU Kernel for POCO X3 Pro (LineageOS)
+name: Build SukiSU Kernel for POCO X3 Pro (Auto-Defconfig)
 
 on:
   workflow_dispatch:
@@ -23,14 +23,30 @@ jobs:
           clang-14 lld-14 llvm-14 python2 lz4
         sudo ln -sf /usr/bin/python2 /usr/bin/python
 
-    - name: Clone LineageOS kernel (branch lineage-20)
+    - name: Clone kernel source (tejas101k/sixteen - has defconfig)
       run: |
-        git clone https://github.com/LineageOS/android_kernel_xiaomi_vayu -b lineage-20 --depth=1 kernel
+        git clone https://github.com/tejas101k/kernel_xiaomi_vayu -b sixteen --depth=1 kernel
         cd kernel
-        if [ ! -f arch/arm64/configs/vayu_defconfig ]; then
-          echo "ERROR: vayu_defconfig not found"
+
+    - name: Find any defconfig
+      id: defconfig
+      run: |
+        cd kernel
+        # List all defconfigs for debugging
+        echo "Available defconfigs:"
+        find arch/arm64/configs -name "*.config" | sort
+        # Try to find one that contains 'vayu' or 'defconfig'
+        CONFIG=$(find arch/arm64/configs -name "*vayu*.config" | head -1)
+        if [ -z "$CONFIG" ]; then
+          CONFIG=$(find arch/arm64/configs -name "defconfig" | head -1)
+        fi
+        if [ -z "$CONFIG" ]; then
+          echo "No defconfig found!"
           exit 1
         fi
+        CONFIG_NAME=$(basename "$CONFIG" .config)
+        echo "Using defconfig: $CONFIG_NAME"
+        echo "NAME=$CONFIG_NAME" >> $GITHUB_OUTPUT
 
     - name: Integrate SukiSU Ultra
       run: |
@@ -38,26 +54,16 @@ jobs:
         curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
         rm -rf KernelSU/.git
 
-    - name: Configure kernel (disable HID and all tracing)
+    - name: Configure kernel
       run: |
         cd kernel
-        make vayu_defconfig
-        # Disable HID to avoid hid-trace.h error
+        make ${{ steps.defconfig.outputs.NAME }}
         scripts/config --disable CONFIG_HID
-        scripts/config --disable CONFIG_HID_SUPPORT
-        # Disable all tracing and debug
         scripts/config --disable CONFIG_TRACING
-        scripts/config --disable CONFIG_FTRACE
-        scripts/config --disable CONFIG_EVENT_TRACING
-        scripts/config --disable CONFIG_DEBUG_FS
-        scripts/config --disable CONFIG_DEBUG_KERNEL
-        scripts/config --disable CONFIG_DEBUG_INFO
-        # Enable SukiSU
         scripts/config --enable CONFIG_KSU_MANUAL_HOOK
-        # Accept all defaults
         make olddefconfig
 
-    - name: Build kernel image
+    - name: Build kernel
       run: |
         cd kernel
         make -j$(nproc) \
@@ -68,27 +74,25 @@ jobs:
           OBJCOPY=llvm-objcopy-14 \
           Image.gz-dtb
 
-    - name: Locate and copy kernel image
+    - name: Copy kernel image
       run: |
         cd kernel
         if [ -f arch/arm64/boot/Image.gz-dtb ]; then
           cp arch/arm64/boot/Image.gz-dtb ../Image.gz-dtb
         else
-          echo "Image.gz-dtb not found. Searching for any kernel image..."
           find arch/arm64/boot -type f -name "Image*" -exec cp {} ../Image.gz-dtb \;
         fi
-        test -f ../Image.gz-dtb || (echo "No kernel image found" && exit 1)
+        test -f ../Image.gz-dtb
 
-    - name: Package with AnyKernel3
+    - name: Package
       run: |
         git clone https://github.com/osm0sis/AnyKernel3 -b master AnyKernel3
         cp Image.gz-dtb AnyKernel3/
         cd AnyKernel3
         zip -r9 "SukiSU_vayu_$(date +%Y%m%d_%H%M%S).zip" . -x ".git*"
 
-    - name: Upload artifact
+    - name: Upload
       uses: actions/upload-artifact@v4
       with:
         name: SukiSU_Kernel_vayu
         path: AnyKernel3/*.zip
-        retention-days: 7
