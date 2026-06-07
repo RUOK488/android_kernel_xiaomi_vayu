@@ -1,65 +1,95 @@
-name: Build Raw Kernel Image
+name: Build SukiSU Kernel for POCO X3 Pro (vayu)
 
 on:
   workflow_dispatch:
 
 env:
   ARCH: arm64
+  SUBARCH: arm64
   CROSS_COMPILE: aarch64-linux-gnu-
-  CROSS_COMPILE_COMPAT: arm-linux-gnueabi-
+  CROSS_COMPILE_ARM32: arm-linux-gnueabi-
 
 jobs:
   build:
     runs-on: ubuntu-22.04
     steps:
-    - name: Install dependencies
-      run: |
-        sudo apt update
-        sudo apt install -y git make bc bison flex libssl-dev libelf-dev \
-          build-essential lzop cpio device-tree-compiler python3 \
-          gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-          clang-14 lld-14 llvm-14 python2 lz4
-        sudo ln -sf /usr/bin/python2 /usr/bin/python
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y git make bc bison flex libssl-dev libelf-dev \
+            build-essential lzop cpio device-tree-compiler python3 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi clang-14 lld-14 llvm-14 \
+            python2 lz4
+          sudo ln -sf /usr/bin/python2 /usr/bin/python
 
-    - name: Clone kernel
-      run: git clone https://github.com/Jebaitedneko/android_kernel_xiaomi_vayu -b caf --depth=1 kernel
+      - name: Clone Kernel Source
+        run: git clone https://github.com/Jebaitedneko/android_kernel_xiaomi_vayu -b caf --depth=1 kernel
 
-    - name: Integrate SukiSU
-      run: |
-        cd kernel
-        curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
-        rm -rf KernelSU/.git
+      - name: Integrate SukiSU Ultra
+        run: |
+          cd kernel
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s nongki
 
-    - name: Configure
-      run: |
-        cd kernel
-        make vayu_defconfig
-        scripts/config --disable CONFIG_HID
-        scripts/config --disable CONFIG_HID_SUPPORT
-        scripts/config --disable CONFIG_TRACING
-        scripts/config --disable CONFIG_FTRACE
-        scripts/config --disable CONFIG_EVENT_TRACING
-        scripts/config --disable CONFIG_PERF_EVENTS
-        scripts/config --disable CONFIG_HUGETLB_PAGE
-        scripts/config --disable CONFIG_DEBUG_FS
-        scripts/config --disable CONFIG_DEBUG_KERNEL
-        scripts/config --disable CONFIG_DEBUG_INFO
-        scripts/config --enable CONFIG_KSU_MANUAL_HOOK
-        make olddefconfig
+      - name: Locate Defconfig
+        id: find_defconfig
+        run: |
+          cd kernel
+          DEFCONFIG_FILE=$(find arch/arm64/configs -name "*vayu*.config" | head -1)
+          if [ -z "$DEFCONFIG_FILE" ]; then
+            echo "No vayu defconfig found. Using generic defconfig."
+            DEFCONFIG_FILE="arch/arm64/configs/defconfig"
+          fi
+          DEFCONFIG_NAME=$(basename "$DEFCONFIG_FILE" .config)
+          echo "Found config: $DEFCONFIG_NAME"
+          echo "defconfig_name=$DEFCONFIG_NAME" >> $GITHUB_OUTPUT
 
-    - name: Build raw Image
-      run: |
-        cd kernel
-        make -j$(nproc) CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 Image
+      - name: Configure Kernel
+        run: |
+          cd kernel
+          make ${{ steps.find_defconfig.outputs.defconfig_name }}
+          scripts/config --disable CONFIG_HID_TRACE
+          scripts/config --disable CONFIG_HID_DEBUG
+          scripts/config --disable CONFIG_HUGETLBFS
+          scripts/config --disable CONFIG_HUGETLB_PAGE
+          scripts/config --disable CONFIG_PERF_EVENTS
+          scripts/config --disable CONFIG_DEBUG_INFO
+          scripts/config --disable CONFIG_KPROBES
+          scripts/config --disable CONFIG_DEBUG_FS
+          scripts/config --enable CONFIG_KSU_MANUAL_HOOK
+          make olddefconfig
 
-    - name: Upload Image
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernel-Image
-        path: kernel/arch/arm64/boot/Image
+      - name: Build Kernel
+        run: |
+          cd kernel
+          make -j$(nproc) \
+            CC=clang-14 \
+            LD=ld.lld-14 \
+            AR=llvm-ar-14 \
+            NM=llvm-nm-14 \
+            OBJCOPY=llvm-objcopy-14 \
+            KCFLAGS="-w"
 
-    - name: Upload vmlinux (debug)
-      uses: actions/upload-artifact@v4
-      with:
-        name: vmlinux
-        path: kernel/vmlinux
+      - name: Locate Kernel Image
+        id: find_image
+        run: |
+          cd kernel
+          KERNEL_IMAGE=$(find arch/arm64/boot -type f \( -name "Image.gz-dtb" -o -name "Image" -o -name "Image.gz" \) | head -1)
+          if [ -z "$KERNEL_IMAGE" ]; then
+            echo "ERROR: Kernel image not found!"
+            exit 1
+          fi
+          echo "image_path=$KERNEL_IMAGE" >> $GITHUB_OUTPUT
+          cp $KERNEL_IMAGE ../Image
+
+      - name: Package with AnyKernel3
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3 -b master AnyKernel3
+          cp Image AnyKernel3/Image.gz-dtb
+          cd AnyKernel3
+          zip -r9 "SukiSU_vayu_$(date +%Y%m%d_%H%M%S).zip" . -x ".git*"
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SukiSU_Kernel_vayu
+          path: AnyKernel3/*.zip
