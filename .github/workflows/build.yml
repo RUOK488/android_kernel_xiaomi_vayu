@@ -1,4 +1,4 @@
-name: Build SukiSU Kernel for POCO X3 Pro (Fixed)
+name: Build SukiSU Kernel for POCO X3 Pro (Final)
 
 on:
   workflow_dispatch:
@@ -13,23 +13,24 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     steps:
-    - name: Install dependencies (including python2)
+    - name: Install dependencies
       run: |
         sudo apt update
         sudo apt install -y \
           git make bc bison flex libssl-dev libelf-dev \
           build-essential lzop cpio device-tree-compiler python3 \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
-          clang-14 lld-14 llvm-14 \
-          python2 lz4
-        # Create symlink for python2 as 'python' (required by old kernel scripts)
+          clang-14 lld-14 llvm-14 python2 lz4
         sudo ln -sf /usr/bin/python2 /usr/bin/python
 
-    - name: Clone kernel source (Jebaitedneko/caf)
+    - name: Clone Jebaitedneko kernel (caf branch)
       run: |
         git clone https://github.com/Jebaitedneko/android_kernel_xiaomi_vayu -b caf --depth=1 kernel
         cd kernel
-        test -f arch/arm64/configs/vayu_defconfig || (echo "vayu_defconfig not found" && exit 1)
+        if [ ! -f arch/arm64/configs/vayu_defconfig ]; then
+          echo "ERROR: vayu_defconfig not found"
+          exit 1
+        fi
 
     - name: Integrate SukiSU Ultra
       run: |
@@ -41,45 +42,40 @@ jobs:
       run: |
         cd kernel
         make vayu_defconfig
+        # Disable problematic drivers
+        scripts/config --disable CONFIG_DRM_MSM
+        scripts/config --disable CONFIG_DRM
+        scripts/config --disable CONFIG_DRM_MIPI_DSI
+        scripts/config --disable CONFIG_DRM_PANEL
+        # Enable SukiSU features
         scripts/config --enable CONFIG_KSU_MANUAL_HOOK
         scripts/config --disable CONFIG_DEBUG_INFO
         scripts/config --disable CONFIG_HID_TRACE
         scripts/config --disable CONFIG_HID_DEBUG
+        # Accept all defaults silently
+        make olddefconfig
 
-    - name: Build kernel (verbose)
+    - name: Build kernel
       run: |
         cd kernel
-        # Build the kernel image; ignore dtbo.img failure (python2 hack)
         make -j$(nproc) \
           CC=clang-14 \
           LD=ld.lld-14 \
           AR=llvm-ar-14 \
           NM=llvm-nm-14 \
-          OBJCOPY=llvm-objcopy-14 \
-          OBJDUMP=llvm-objdump-14 \
-          V=1
-        # Manually create dtb if needed (optional)
-        make dtbs || true
+          OBJCOPY=llvm-objcopy-14
 
-    - name: Find and copy kernel image
-      id: image
+    - name: Extract kernel image
       run: |
         cd kernel
-        # List all possible images for debugging
-        echo "Contents of arch/arm64/boot:"
-        ls -la arch/arm64/boot/ || true
-        # Search for any kernel image
-        IMG=$(find arch/arm64/boot -type f \( -name "Image.gz-dtb" -o -name "Image.gz" -o -name "Image" -o -name "zImage" -o -name "Image.lz4" \) | head -1)
-        if [ -n "$IMG" ]; then
-          cp "$IMG" ../Image.gz-dtb
-          echo "Copied $IMG"
+        if [ -f arch/arm64/boot/Image.gz-dtb ]; then
+          cp arch/arm64/boot/Image.gz-dtb ../Image.gz-dtb
         else
-          echo "ERROR: No kernel image found"
-          find arch/arm64/boot -type f
-          exit 1
+          find arch/arm64/boot -type f -name "Image*" -exec cp {} ../Image.gz-dtb \;
         fi
+        test -f ../Image.gz-dtb || (echo "No kernel image" && exit 1)
 
-    - name: Package with AnyKernel3
+    - name: Package AnyKernel3
       run: |
         git clone https://github.com/osm0sis/AnyKernel3 -b master AnyKernel3
         cp Image.gz-dtb AnyKernel3/
@@ -91,4 +87,3 @@ jobs:
       with:
         name: SukiSU_Kernel_vayu
         path: AnyKernel3/*.zip
-        retention-days: 7
