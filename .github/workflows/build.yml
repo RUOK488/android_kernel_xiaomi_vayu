@@ -27,10 +27,7 @@ jobs:
       run: |
         git clone https://github.com/Jebaitedneko/android_kernel_xiaomi_vayu -b caf --depth=1 kernel
         cd kernel
-        if [ ! -f arch/arm64/configs/vayu_defconfig ]; then
-          echo "ERROR: vayu_defconfig not found"
-          exit 1
-        fi
+        test -f arch/arm64/configs/vayu_defconfig || (echo "vayu_defconfig missing" && exit 1)
 
     - name: Integrate SukiSU Ultra
       run: |
@@ -38,24 +35,26 @@ jobs:
         curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
         rm -rf KernelSU/.git
 
-    - name: Configure kernel
+    - name: Configure kernel (disable all tracing to avoid HID trace errors)
       run: |
         cd kernel
         make vayu_defconfig
-        # Disable problematic drivers
-        scripts/config --disable CONFIG_DRM_MSM
-        scripts/config --disable CONFIG_DRM
-        scripts/config --disable CONFIG_DRM_MIPI_DSI
-        scripts/config --disable CONFIG_DRM_PANEL
-        # Enable SukiSU features
-        scripts/config --enable CONFIG_KSU_MANUAL_HOOK
-        scripts/config --disable CONFIG_DEBUG_INFO
+        # Disable all tracing and debug features that cause build failures
         scripts/config --disable CONFIG_HID_TRACE
         scripts/config --disable CONFIG_HID_DEBUG
+        scripts/config --disable CONFIG_DEBUG_FS
+        scripts/config --disable CONFIG_TRACING
+        scripts/config --disable CONFIG_FTRACE
+        scripts/config --disable CONFIG_EVENT_TRACING
+        scripts/config --disable CONFIG_ENABLE_MUST_CHECK
+        scripts/config --disable CONFIG_FRAME_POINTER
+        # Enable SukiSU
+        scripts/config --enable CONFIG_KSU_MANUAL_HOOK
+        scripts/config --disable CONFIG_DEBUG_INFO
         # Accept all defaults silently
         make olddefconfig
 
-    - name: Build kernel
+    - name: Build kernel image only
       run: |
         cd kernel
         make -j$(nproc) \
@@ -63,19 +62,21 @@ jobs:
           LD=ld.lld-14 \
           AR=llvm-ar-14 \
           NM=llvm-nm-14 \
-          OBJCOPY=llvm-objcopy-14
+          OBJCOPY=llvm-objcopy-14 \
+          Image.gz-dtb
 
-    - name: Extract kernel image
+    - name: Verify and copy kernel image
       run: |
         cd kernel
         if [ -f arch/arm64/boot/Image.gz-dtb ]; then
           cp arch/arm64/boot/Image.gz-dtb ../Image.gz-dtb
         else
-          find arch/arm64/boot -type f -name "Image*" -exec cp {} ../Image.gz-dtb \;
+          echo "Image.gz-dtb not found. Listing boot directory:"
+          ls -la arch/arm64/boot/
+          exit 1
         fi
-        test -f ../Image.gz-dtb || (echo "No kernel image" && exit 1)
 
-    - name: Package AnyKernel3
+    - name: Package with AnyKernel3
       run: |
         git clone https://github.com/osm0sis/AnyKernel3 -b master AnyKernel3
         cp Image.gz-dtb AnyKernel3/
@@ -87,3 +88,4 @@ jobs:
       with:
         name: SukiSU_Kernel_vayu
         path: AnyKernel3/*.zip
+        retention-days: 7
