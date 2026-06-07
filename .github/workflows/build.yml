@@ -1,4 +1,4 @@
-name: Build SukiSU Kernel for POCO X3 Pro (Stable)
+name: Build Raw Kernel Image
 
 on:
   workflow_dispatch:
@@ -11,91 +11,55 @@ env:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    timeout-minutes: 120
     steps:
     - name: Install dependencies
       run: |
         sudo apt update
-        sudo apt install -y \
-          git make bc bison flex libssl-dev libelf-dev \
+        sudo apt install -y git make bc bison flex libssl-dev libelf-dev \
           build-essential lzop cpio device-tree-compiler python3 \
           gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi \
           clang-14 lld-14 llvm-14 python2 lz4
         sudo ln -sf /usr/bin/python2 /usr/bin/python
 
-    - name: Clone Jebaitedneko kernel (caf branch)
-      run: |
-        git clone https://github.com/Jebaitedneko/android_kernel_xiaomi_vayu -b caf --depth=1 kernel
-        cd kernel
-        test -f arch/arm64/configs/vayu_defconfig || (echo "vayu_defconfig missing" && exit 1)
+    - name: Clone kernel
+      run: git clone https://github.com/Jebaitedneko/android_kernel_xiaomi_vayu -b caf --depth=1 kernel
 
-    - name: Integrate SukiSU Ultra
+    - name: Integrate SukiSU
       run: |
         cd kernel
         curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
         rm -rf KernelSU/.git
 
-    - name: Configure kernel (disable all tracing, perf, hugetlb, HID)
+    - name: Configure
       run: |
         cd kernel
         make vayu_defconfig
-        # Disable HID (avoids hid-trace.h)
         scripts/config --disable CONFIG_HID
         scripts/config --disable CONFIG_HID_SUPPORT
-        # Disable all tracing and ftrace
         scripts/config --disable CONFIG_TRACING
         scripts/config --disable CONFIG_FTRACE
         scripts/config --disable CONFIG_EVENT_TRACING
         scripts/config --disable CONFIG_PERF_EVENTS
         scripts/config --disable CONFIG_HUGETLB_PAGE
-        scripts/config --disable CONFIG_HUGETLBFS
         scripts/config --disable CONFIG_DEBUG_FS
         scripts/config --disable CONFIG_DEBUG_KERNEL
         scripts/config --disable CONFIG_DEBUG_INFO
-        # Enable SukiSU
         scripts/config --enable CONFIG_KSU_MANUAL_HOOK
         make olddefconfig
 
-    - name: Build kernel
+    - name: Build raw Image
       run: |
         cd kernel
-        make -j$(nproc) \
-          CC=clang-14 \
-          LD=ld.lld-14 \
-          AR=llvm-ar-14 \
-          NM=llvm-nm-14 \
-          OBJCOPY=llvm-objcopy-14
+        make -j$(nproc) CC=clang-14 LD=ld.lld-14 AR=llvm-ar-14 NM=llvm-nm-14 OBJCOPY=llvm-objcopy-14 Image
 
-    - name: Find and copy kernel image
-      run: |
-        cd kernel
-        # List boot directory for debugging
-        echo "Contents of arch/arm64/boot:"
-        ls -la arch/arm64/boot/
-        # Try to find any kernel image
-        if [ -f arch/arm64/boot/Image.gz-dtb ]; then
-          cp arch/arm64/boot/Image.gz-dtb ../Image.gz-dtb
-        elif [ -f arch/arm64/boot/Image.gz ]; then
-          cp arch/arm64/boot/Image.gz ../Image.gz-dtb
-        elif [ -f arch/arm64/boot/Image ]; then
-          cp arch/arm64/boot/Image ../Image.gz-dtb
-        elif [ -f arch/arm64/boot/zImage ]; then
-          cp arch/arm64/boot/zImage ../Image.gz-dtb
-        else
-          echo "No kernel image found. Searching recursively..."
-          find . -name "Image*" -o -name "zImage"
-          exit 1
-        fi
-
-    - name: Package with AnyKernel3
-      run: |
-        git clone https://github.com/osm0sis/AnyKernel3 -b master AnyKernel3
-        cp Image.gz-dtb AnyKernel3/
-        cd AnyKernel3
-        zip -r9 "SukiSU_vayu_$(date +%Y%m%d_%H%M%S).zip" . -x ".git*"
-
-    - name: Upload artifact
+    - name: Upload Image
       uses: actions/upload-artifact@v4
       with:
-        name: SukiSU_Kernel_vayu
-        path: AnyKernel3/*.zip
+        name: kernel-Image
+        path: kernel/arch/arm64/boot/Image
+
+    - name: Upload vmlinux (debug)
+      uses: actions/upload-artifact@v4
+      with:
+        name: vmlinux
+        path: kernel/vmlinux
