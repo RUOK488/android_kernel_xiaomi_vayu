@@ -1,4 +1,4 @@
-name: Build SukiSU Kernel for POCO X3 Pro (Final)
+name: Build SukiSU Kernel for POCO X3 Pro (LineageOS)
 
 on:
   workflow_dispatch:
@@ -23,11 +23,14 @@ jobs:
           clang-14 lld-14 llvm-14 python2 lz4
         sudo ln -sf /usr/bin/python2 /usr/bin/python
 
-    - name: Clone Jebaitedneko kernel (caf branch)
+    - name: Clone LineageOS kernel (branch lineage-20)
       run: |
-        git clone https://github.com/Jebaitedneko/android_kernel_xiaomi_vayu -b caf --depth=1 kernel
+        git clone https://github.com/LineageOS/android_kernel_xiaomi_vayu -b lineage-20 --depth=1 kernel
         cd kernel
-        test -f arch/arm64/configs/vayu_defconfig || (echo "vayu_defconfig missing" && exit 1)
+        if [ ! -f arch/arm64/configs/vayu_defconfig ]; then
+          echo "ERROR: vayu_defconfig not found"
+          exit 1
+        fi
 
     - name: Integrate SukiSU Ultra
       run: |
@@ -35,26 +38,26 @@ jobs:
         curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
         rm -rf KernelSU/.git
 
-    - name: Configure kernel (disable all tracing to avoid HID trace errors)
+    - name: Configure kernel (disable HID and all tracing)
       run: |
         cd kernel
         make vayu_defconfig
-        # Disable all tracing and debug features that cause build failures
-        scripts/config --disable CONFIG_HID_TRACE
-        scripts/config --disable CONFIG_HID_DEBUG
-        scripts/config --disable CONFIG_DEBUG_FS
+        # Disable HID to avoid hid-trace.h error
+        scripts/config --disable CONFIG_HID
+        scripts/config --disable CONFIG_HID_SUPPORT
+        # Disable all tracing and debug
         scripts/config --disable CONFIG_TRACING
         scripts/config --disable CONFIG_FTRACE
         scripts/config --disable CONFIG_EVENT_TRACING
-        scripts/config --disable CONFIG_ENABLE_MUST_CHECK
-        scripts/config --disable CONFIG_FRAME_POINTER
+        scripts/config --disable CONFIG_DEBUG_FS
+        scripts/config --disable CONFIG_DEBUG_KERNEL
+        scripts/config --disable CONFIG_DEBUG_INFO
         # Enable SukiSU
         scripts/config --enable CONFIG_KSU_MANUAL_HOOK
-        scripts/config --disable CONFIG_DEBUG_INFO
-        # Accept all defaults silently
+        # Accept all defaults
         make olddefconfig
 
-    - name: Build kernel image only
+    - name: Build kernel image
       run: |
         cd kernel
         make -j$(nproc) \
@@ -65,16 +68,16 @@ jobs:
           OBJCOPY=llvm-objcopy-14 \
           Image.gz-dtb
 
-    - name: Verify and copy kernel image
+    - name: Locate and copy kernel image
       run: |
         cd kernel
         if [ -f arch/arm64/boot/Image.gz-dtb ]; then
           cp arch/arm64/boot/Image.gz-dtb ../Image.gz-dtb
         else
-          echo "Image.gz-dtb not found. Listing boot directory:"
-          ls -la arch/arm64/boot/
-          exit 1
+          echo "Image.gz-dtb not found. Searching for any kernel image..."
+          find arch/arm64/boot -type f -name "Image*" -exec cp {} ../Image.gz-dtb \;
         fi
+        test -f ../Image.gz-dtb || (echo "No kernel image found" && exit 1)
 
     - name: Package with AnyKernel3
       run: |
